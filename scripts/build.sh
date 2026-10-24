@@ -93,6 +93,7 @@ if $NOTARIZE; then
 fi
 
 # --- Packages --------------------------------------------------------------------------
+echo "Packaging…"
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
@@ -101,8 +102,27 @@ STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT
 ditto "$APP" "$STAGING/$APP_NAME.app"
 ln -s /Applications "$STAGING/Applications"
-rm -f "$DMG"
-hdiutil create -quiet -volname "$APP_NAME" -srcfolder "$STAGING" -fs APFS -format UDZO "$DMG"
+make_dmg() {
+  # macOS 27 deprecates `hdiutil create`; `diskutil image` replaces it.
+  if diskutil image create from --help >/dev/null 2>&1; then
+    diskutil image create from --format UDZO --volumeName "$APP_NAME" "$STAGING" "$DMG"
+  else
+    hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING" -fs APFS -format UDZO "$DMG"
+  fi
+}
+# Disk image tools sometimes fail with "Resource busy" on CI machines, so try a few times.
+for attempt in 1 2 3 4 5; do
+  rm -f "$DMG"
+  if make_dmg >/dev/null; then
+    break
+  fi
+  if [[ $attempt == 5 ]]; then
+    echo "error: could not create the disk image" >&2
+    exit 1
+  fi
+  echo "Creating the disk image failed (attempt $attempt), retrying…" >&2
+  sleep $((attempt * 3))
+done
 codesign --force "$TIMESTAMP" --sign "$SIGN_IDENTITY" "$DMG"
 
 if $NOTARIZE; then
