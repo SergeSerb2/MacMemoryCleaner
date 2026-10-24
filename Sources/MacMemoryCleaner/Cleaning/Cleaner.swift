@@ -107,31 +107,37 @@ nonisolated struct CleanReport: Sendable, Codable {
     }
 }
 
+nonisolated enum CleanResult: Sendable {
+    case finished(CleanReport)
+    /// Another clean was running, in this process or another one.
+    case busy
+    /// A clean finished less than `minimumGap` ago.
+    case tooSoon
+}
+
 enum Cleaner {
-    private static let lastCleanFinishedKey = "state.lastCleanFinished"
-
-    /// When the last clean in any process (app or command line) finished. A time in the
-    /// future means the clock was set back, so it counts as long ago.
-    static var lastCleanFinished: Date? {
-        guard let date = UserDefaults.standard.object(forKey: lastCleanFinishedKey) as? Date, date <= .now else { return nil }
-        return date
-    }
-
-    /// Runs the enabled steps in order and measures memory before and after. Returns `nil`
-    /// without doing anything if another clean is running, in this process or another one.
+    /// Runs the enabled steps in order and measures memory before and after.
+    ///
+    /// Only one clean runs at a time across all processes. With `minimumGap`, the clean
+    /// also skips itself if any clean finished within that time; the check happens after
+    /// taking the lock, so two processes can never both pass it.
     ///
     /// The order matters: flush writes so dirty pages become clean, signal pressure so apps
     /// hand back caches, then purge so the now-clean file cache leaves RAM.
     static func clean(
         options: CleanOptions,
         trigger: CleanTrigger,
+        minimumGap: TimeInterval? = nil,
         progress: (CleanStep) -> Void = { _ in }
-    ) async -> CleanReport? {
-        guard let lock = CleanLock.acquire() else { return nil }
-        defer { lock.release() }
+    ) async -> CleanResult {
+        guard let lock = CleanLock.acquire() else { return .busy }
+        if let minimumGap, let last = CleanLock.lastCleanFinished, Date.now.timeIntervalSince(last) < minimumGap {
+            lock.release(finished: nil)
+            return .tooSoon
+        }
 
         let start = Date.now
-        let before = MemorySnapshot.current() ?? .empty
+        let before = MemorySnapshot.current()
         var results: [StepResult] = []
 
         if options.flushWrites {
@@ -155,15 +161,19 @@ enum Cleaner {
             try? await Task.sleep(for: .seconds(1))
         }
 
-        UserDefaults.standard.set(Date.now, forKey: lastCleanFinishedKey)
-        return CleanReport(
+        let finished = Date.now
+        lock.release(finished: finished)
+        // If one reading failed, report no change rather than a made-up difference.
+        let after = MemorySnapshot.current()
+        let measuredBefore = before ?? after ?? .empty
+        return .finished(CleanReport(
             trigger: trigger,
-            finished: .now,
-            duration: Date.now.timeIntervalSince(start),
-            before: before,
-            after: MemorySnapshot.current() ?? .empty,
+            finished: finished,
+            duration: finished.timeIntervalSince(start),
+            before: measuredBefore,
+            after: after ?? measuredBefore,
             steps: results
-        )
+        ))
     }
 
     private static func runPrivileged(_ command: AdminAccess.PrivilegedCommand) async -> StepOutcome {

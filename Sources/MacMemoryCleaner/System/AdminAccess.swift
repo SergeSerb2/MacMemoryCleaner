@@ -76,7 +76,8 @@ nonisolated enum AdminAccess {
     }
 
     /// Shows the macOS administrator prompt once and installs the sudoers rule.
-    static func install() async throws {
+    /// The commands setup runs as root, one per line. `--setup --dry-run` prints them.
+    static var installCommands: [String] {
         // printf with single-quoted arguments keeps the rule free of shell expansion.
         // The rule must not contain single quotes. (It contains double quotes, which the
         // AppleScript string escapes.)
@@ -84,7 +85,7 @@ nonisolated enum AdminAccess {
 
         // Write to a dot-file first (sudo ignores names with a dot), check it with visudo,
         // then move it into place. A broken rule never goes live.
-        let script = [
+        return [
             "set -e",
             "tmp=$(/usr/bin/mktemp /private/etc/sudoers.d/.macmemorycleaner.XXXXXX)",
             "trap '/bin/rm -f \"$tmp\"' EXIT",
@@ -93,11 +94,18 @@ nonisolated enum AdminAccess {
             "/bin/chmod 0440 \"$tmp\"",
             "/usr/sbin/visudo -cqf \"$tmp\"",
             "/bin/mv -f \"$tmp\" \(sudoersPath)",
-            "/bin/rm -f \(legacySudoersPath)",
-        ].joined(separator: "; ")
+            removeLegacyRuleCommand,
+        ]
+    }
 
+    /// The commands removal runs as root. `--remove-setup --dry-run` prints them.
+    static var uninstallCommands: [String] {
+        ["/bin/rm -f \(sudoersPath)", removeLegacyRuleCommand]
+    }
+
+    static func install() async throws {
         try await runAsAdministrator(
-            script,
+            installCommands.joined(separator: "; "),
             prompt: "Mac Memory Cleaner wants to let your account run purge and memory_pressure as root without a password. You only need to do this once.",
             failure: SetupError.installFailed
         )
@@ -105,10 +113,16 @@ nonisolated enum AdminAccess {
 
     static func uninstall() async throws {
         try await runAsAdministrator(
-            "/bin/rm -f \(sudoersPath) \(legacySudoersPath)",
+            uninstallCommands.joined(separator: "; "),
             prompt: "Mac Memory Cleaner wants to remove the rule that lets it clean memory without your password.",
             failure: SetupError.removeFailed
         )
+    }
+
+    /// Deletes the pre-1.0 shared file only if it holds this account's rule, so it never
+    /// takes away another account's access.
+    private static var removeLegacyRuleCommand: String {
+        "if /usr/bin/grep -q '^#\(getuid()) ' \(legacySudoersPath) 2>/dev/null; then /bin/rm -f \(legacySudoersPath); fi"
     }
 
     private static func runAsAdministrator(_ shellScript: String, prompt: String, failure: (String) -> SetupError) async throws {

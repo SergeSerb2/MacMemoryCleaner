@@ -1,7 +1,7 @@
 # Security Policy
 
-Mac Memory Cleaner asks for administrator rights once, so its security model deserves a
-clear explanation.
+Mac Memory Cleaner asks for administrator rights once. This page explains what that
+allows.
 
 ## Reporting a vulnerability
 
@@ -19,12 +19,13 @@ The app runs two commands as root: `purge` and `memory_pressure -S`. To run them
 asking for your password each time, the one-time setup installs this file:
 
 ```text
-/etc/sudoers.d/macmemorycleaner-501     owner root:wheel, mode 0440
+/etc/sudoers.d/macmemorycleaner-501     owner root:wheel, mode 0440, comment lines left out
 
 #501 ALL = (root) NOPASSWD: /usr/sbin/purge "", /usr/bin/memory_pressure -S -l warn -s 2, /usr/bin/memory_pressure -S -l critical -s 2
 ```
 
-`501` is your numeric user ID. Run the app binary with `--show-rule` to see your exact rule.
+`501` is your numeric user ID. Run the app binary with `--show-rule` to see your exact rule,
+and with `--setup --dry-run` to see every command setup runs as root.
 
 - The rule allows only those three exact command lines. sudo rejects any other arguments
   (`""` means "no arguments" for `purge`), any other command, and any other user.

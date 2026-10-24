@@ -35,7 +35,7 @@ struct ShortcutRecorder: View {
                 }
             }
             if rejected {
-                Text("Use ⌃ or ⌥ in the shortcut, so it can’t replace a shortcut like ⌘W.")
+                Text("Use ⌃ with another modifier, or ⌥⌘, so the shortcut can’t replace one you type or use in apps.")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
@@ -44,6 +44,7 @@ struct ShortcutRecorder: View {
     }
 
     private func resetToDefault() {
+        rejected = false
         keyCode = Preference.hotKeyCode.defaultValue
         modifiers = Preference.hotKeyModifiers.defaultValue
         label = Preference.hotKeyLabel.defaultValue
@@ -55,13 +56,17 @@ struct ShortcutRecorder: View {
         isRecording = true
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             if Int(event.keyCode) == kVK_Escape {
+                rejected = false
                 stopRecording()
                 return nil
             }
             let flags = event.modifierFlags.intersection([.control, .option, .shift, .command])
-            // A global shortcut takes the key combination from every app. Without ⌃ or ⌥ it
-            // could take over typing, or a standard shortcut such as ⌘W or ⌘Q.
-            guard flags.contains(.control) || flags.contains(.option) || ShortcutFormat.isFunctionKey(event.keyCode) else {
+            // A global shortcut takes the key combination from every app. ⌘ alone would take
+            // standard shortcuts such as ⌘W; ⌥ or ⌃ alone can type characters or edit text.
+            // ⌃ plus another modifier, or ⌥⌘, is safe. Function keys may stand alone.
+            let controlCombo = flags.contains(.control) && flags.subtracting(.control) != []
+            let optionCommand = flags.isSuperset(of: [.option, .command])
+            guard controlCombo || optionCommand || ShortcutFormat.isFunctionKey(event.keyCode) else {
                 rejected = true
                 NSSound.beep()
                 return nil

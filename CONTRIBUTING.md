@@ -61,9 +61,9 @@ MMC="build/Mac Memory Cleaner.app/Contents/MacOS/MacMemoryCleaner"
 "$MMC" --screenshots /tmp/mmc-screenshots   # renders the panel and all Settings tabs
 ```
 
-`--screenshots` needs Screen Recording permission for your terminal to capture Liquid Glass
-as it really looks. Each window comes to the front and takes keystrokes for about a second,
-so do not type while it runs.
+Give your terminal Screen Recording permission first. Without it, `--screenshots` still
+works, but Liquid Glass looks flat. Each window comes to the front and takes keystrokes for
+about a second, so do not type while it runs. Render on a Retina display for sharp images.
 
 CI builds the app on macOS 27 for every pull request and runs a real clean on the runner.
 
@@ -71,8 +71,8 @@ CI builds the app on macOS 27 for every pull request and runs a real clean on th
 
 - Keep each pull request to one change.
 - Describe what you changed, why, and how you tested it.
-- Add an entry under a new `## [Unreleased]` section in `CHANGELOG.md` for changes users
-  will notice.
+- For changes users will notice, add an entry under `## [Unreleased]` at the top of
+  `CHANGELOG.md`. Create that section if it is missing.
 - If the UI changes, update the README screenshots with `--screenshots docs --demo`. The
   `--demo` data keeps the apps on your Mac out of the images.
 
@@ -81,7 +81,9 @@ CI builds the app on macOS 27 for every pull request and runs a real clean on th
 1. In `CHANGELOG.md`, rename the version section to `## [X.Y.Z] - YYYY-MM-DD` and add its
    link at the bottom.
 2. Set `CFBundleShortVersionString` in `Resources/Info.plist` to `X.Y.Z`.
-3. Commit, then tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+3. Commit and push to `main`, then tag and push the tag:
+   `git tag vX.Y.Z && git push origin vX.Y.Z`. The workflow stops if the changelog section
+   has no date.
 4. The Release workflow builds the app and opens a **draft** release with the DMG, zip, and
    checksums. Check it, then publish it.
 

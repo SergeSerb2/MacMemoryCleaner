@@ -9,7 +9,8 @@
 #   BUILD_NUMBER    CFBundleVersion. Default: the number of commits on HEAD.
 #   SIGN_IDENTITY   codesign identity. Default: the first "Developer ID Application" or
 #                   "Apple Development" certificate in your keychain, else "-" (ad-hoc).
-#   Notarization runs only with a "Developer ID Application" identity and one of:
+#   Notarization needs a "Developer ID Application" identity (the build fails without
+#   one) and one of:
 #   NOTARY_PROFILE                              a profile saved with
 #                                               `xcrun notarytool store-credentials`
 #   NOTARY_KEY_PATH, NOTARY_KEY_ID, NOTARY_ISSUER   an App Store Connect API key
@@ -49,8 +50,12 @@ echo "Version $(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "
 
 # --- Signing ---------------------------------------------------------------------------
 if [[ -z "${SIGN_IDENTITY:-}" ]]; then
-  SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
-    | grep -Eo '"(Developer ID Application|Apple Development): [^"]+"' | head -1 | tr -d '"' || true)
+  IDENTITIES=$(security find-identity -v -p codesigning 2>/dev/null || true)
+  # Prefer Developer ID, which is the only kind that can be notarized.
+  for KIND in "Developer ID Application" "Apple Development"; do
+    SIGN_IDENTITY=$(grep -Eo "\"$KIND: [^\"]+\"" <<< "$IDENTITIES" | head -1 | tr -d '"' || true)
+    [[ -n "$SIGN_IDENTITY" ]] && break
+  done
 fi
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 DEVELOPER_ID=false

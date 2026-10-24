@@ -25,6 +25,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check the changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if ! grep -qE "^## \[${VERSION//./\\.}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md needs a dated section: ## [$VERSION] - YYYY-MM-DD"
+            exit 1
+          fi
+
+      # The version the app is developed and tested with. Update when the image changes.
       - name: Select Xcode 27.1
         run: sudo xcode-select -s /Applications/Xcode_27.1.app
 
@@ -68,15 +77,21 @@ jobs:
         run: |
           (cd build && shasum -a 256 MacMemoryCleaner.dmg MacMemoryCleaner.zip > SHA256SUMS.txt)
           VERSION="${GITHUB_REF_NAME#v}"
-          # The CHANGELOG section for this version, without its heading.
+          # The CHANGELOG section for this version, without its heading or link lines.
+          # GitHub shows single line breaks, so wrapped lines are joined back together.
           awk -v version="$VERSION" '
             $0 ~ "^## \\[" version "\\]" { found = 1; next }
             found && /^## \[/ { exit }
+            found && /^\[[^]]+\]: / { next }
             found { print }
-          ' CHANGELOG.md > build/release-notes.md
-          if [[ ! -s build/release-notes.md ]]; then
-            echo "::error::CHANGELOG.md has no section for $VERSION"
-            exit 1
+          ' CHANGELOG.md | awk '
+            /^[[:space:]]+[^[:space:]]/ && started && previous != "" { sub(/^[[:space:]]+/, ""); previous = previous " " $0; next }
+            { if (started) print previous; previous = $0; started = 1 }
+            END { if (started) print previous }
+          ' > build/release-notes.md
+          if codesign -dv "build/Mac Memory Cleaner.app" 2>&1 | grep -q "Signature=adhoc"; then
+            printf '\n> This build is not notarized. To open it the first time, see [the FAQ](%s).\n' \
+              "https://github.com/$GITHUB_REPOSITORY#why-does-macos-say-the-app-cannot-be-opened" >> build/release-notes.md
           fi
 
       - name: Create draft release

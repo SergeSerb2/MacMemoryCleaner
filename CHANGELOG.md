@@ -23,7 +23,8 @@ First release.
 - Notifications after shortcut and automatic cleans.
 - Open at login.
 - Command-line mode: `--stats`, `--clean`, `--status`, `--setup`, `--show-rule`,
-  `--remove-setup`, and `--version`, with `--json` output.
+  `--remove-setup`, and `--version`, with `--json` output. `--setup --dry-run` prints the
+  commands that would run as root.
 - Settings › About with the version and links.
 
 [1.0.0]: https://github.com/SergeSerb2/MacMemoryCleaner/releases/tag/v1.0.0

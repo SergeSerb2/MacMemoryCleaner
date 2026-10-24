@@ -9,7 +9,7 @@ struct TopAppsList: View {
             HStack(alignment: .firstTextBaseline) {
                 Text("Top Apps")
                     .font(.subheadline.weight(.semibold))
-                    .help("Quitting an app you don’t need frees more memory than any clean.")
+                    .help("Quitting a large app you don’t need often frees more memory than a clean.")
                 Spacer()
                 Button {
                     NSWorkspace.shared.open(URL(filePath: "/System/Applications/Utilities/Activity Monitor.app"))

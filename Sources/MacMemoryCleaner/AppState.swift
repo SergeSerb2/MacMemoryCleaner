@@ -20,7 +20,10 @@ final class AppState {
     /// The panel only samples per-app memory while someone is looking at it.
     var isPanelVisible = false {
         didSet {
-            guard isPanelVisible != oldValue, isPanelVisible else { return }
+            guard isPanelVisible != oldValue else { return }
+            // The panel can close under the pointer (for example for the Force Quit alert),
+            // and then no hover-end event arrives.
+            guard isPanelVisible else { appOrderFrozen = false; return }
             Task {
                 await refresh(includeApps: true)
                 // Setup may have happened elsewhere, for example with `--setup`.
@@ -44,6 +47,10 @@ final class AppState {
     /// A clean cannot raise available memory much (purged cache only becomes free memory),
     /// so after a threshold clean, wait until available memory recovers before the next.
     @ObservationIgnored private var thresholdArmed = true
+    /// Set when pressure arrives during the cool-down. Pressure events mark a change of level
+    /// only, so pressure that began during the cool-down and never let go would otherwise
+    /// never get its clean. Cleared by any clean that runs.
+    @ObservationIgnored private var pressurePending = false
 
     init() {
         Preference.registerDefaults()
@@ -67,21 +74,33 @@ final class AppState {
 
     // MARK: Cleaning
 
-    func clean(trigger: CleanTrigger) {
+    /// `minimumGap` is for automatic cleans: skip if any clean finished within that time.
+    func clean(trigger: CleanTrigger, minimumGap: TimeInterval? = nil) {
         guard !isCleaning else { return }
         isCleaning = true
         Log.app.info("Clean requested. \(trigger.title, privacy: .public)")
         Task {
-            defer {
-                currentStep = nil
-                isCleaning = false
-            }
-            guard let report = await Cleaner.clean(options: defaults.cleanOptions, trigger: trigger, progress: { step in
+            let result = await Cleaner.clean(options: defaults.cleanOptions, trigger: trigger, minimumGap: minimumGap) { step in
                 self.currentStep = step
-            }) else {
+            }
+            // Done before the refresh and the notification below, which can wait a long
+            // time (for example on an unanswered notification permission prompt).
+            currentStep = nil
+            isCleaning = false
+            let report: CleanReport
+            switch result {
+            case .finished(let finished):
+                report = finished
+            case .busy:
                 Log.app.info("Clean skipped: another clean is running")
                 return
+            case .tooSoon:
+                Log.app.info("Clean skipped: another clean just finished")
+                return
             }
+            // Only a clean that really ran waits for available memory to recover.
+            if case .lowAvailableMemory = trigger { thresholdArmed = false }
+            pressurePending = false
             lastReport = report
             let steps = report.steps.map { "\($0.step.rawValue)=\($0.outcome)" }.joined(separator: " ")
             Log.app.info("Clean finished: freed \(report.freed) bytes in \(report.duration, format: .fixed(precision: 1)) s; \(steps, privacy: .public)")
@@ -182,7 +201,7 @@ final class AppState {
                 guard let self else { return }
                 let visible = self.isPanelVisible
                 await self.refresh(includeApps: visible)
-                self.checkSustainedPressure()
+                self.checkPendingPressure()
                 self.checkAvailableMemoryThreshold()
                 try? await Task.sleep(for: .seconds(visible ? 2 : 5))
             }
@@ -194,7 +213,7 @@ final class AppState {
         if let current = MemorySnapshot.current(), current != snapshot { snapshot = current }
         guard includeApps else { return }
         let fresh = await AppMemorySampler.topApps(limit: 6)
-        if appOrderFrozen {
+        if appOrderFrozen && !topApps.isEmpty {
             // Update the numbers in place. Apps that quit drop out; new ones wait.
             topApps = topApps.compactMap { row in
                 fresh.first { $0.id == row.id } ?? (row.app?.isTerminated == false ? row : nil)
@@ -209,16 +228,25 @@ final class AppState {
         source.setEventHandler { [weak self, unowned source] in
             Log.app.info("Memory pressure event: \(source.data.rawValue)")
             guard let self, self.defaults[Preference.autoCleanOnPressure] else { return }
-            self.autoClean(trigger: .memoryPressure)
+            // Events during a clean come from the clean's own signal. Just after a clean,
+            // macOS reports the real level again as the simulated one ends; that echo is
+            // not new pressure either.
+            guard !self.isCleaning else { return }
+            if let last = CleanLock.lastCleanFinished, Date.now.timeIntervalSince(last) < 30 { return }
+            if !self.autoClean(trigger: .memoryPressure) { self.pressurePending = true }
         }
         source.activate()
         pressureSource = source
     }
 
-    /// Pressure events mark a change of level only. If pressure began during the cool-down
-    /// and never let go, this catches it once the cool-down ends.
-    private func checkSustainedPressure() {
-        guard defaults[Preference.autoCleanOnPressure], snapshot.pressure != .normal else { return }
+    /// Runs the clean that pressure during the cool-down asked for, once the cool-down ends,
+    /// if the pressure is still there. Sustained pressure gets one clean, not one per cool-down.
+    private func checkPendingPressure() {
+        guard pressurePending else { return }
+        guard defaults[Preference.autoCleanOnPressure], snapshot.pressure != .normal else {
+            pressurePending = false
+            return
+        }
         autoClean(trigger: .memoryPressure, quietlySkip: true)
     }
 
@@ -227,24 +255,24 @@ final class AppState {
         let threshold = defaults[Preference.autoCleanThreshold]
         if snapshot.availablePercent >= threshold + 5 { thresholdArmed = true }
         guard thresholdArmed, snapshot.availablePercent < threshold else { return }
-        if autoClean(trigger: .lowAvailableMemory(percent: snapshot.availablePercent), quietlySkip: true) {
-            thresholdArmed = false
-        }
+        autoClean(trigger: .lowAvailableMemory(percent: snapshot.availablePercent), quietlySkip: true)
     }
 
     /// Starts a clean unless one ran recently. Every clean counts for the cool-down,
-    /// including cleans from the command line. Returns whether a clean started.
+    /// including cleans from the command line. Returns false during the cool-down.
     @discardableResult
     private func autoClean(trigger: CleanTrigger, quietlySkip: Bool = false) -> Bool {
-        // Our own pressure signal also reaches this app, which is one more reason for the
-        // isCleaning guard and the cool-down.
-        guard !isCleaning else { return false }
+        guard !isCleaning else { return true }
         let minimumGap = TimeInterval(max(defaults[Preference.autoCleanMinimumMinutes], 1) * 60)
-        if let last = Cleaner.lastCleanFinished, Date.now.timeIntervalSince(last) < minimumGap {
-            if !quietlySkip { Log.app.info("Auto-clean skipped: last clean was under \(Int(minimumGap / 60)) minutes ago") }
+        // A cheap early check. Cleaner checks again while it holds the lock.
+        if let last = CleanLock.lastCleanFinished, Date.now.timeIntervalSince(last) < minimumGap {
+            if !quietlySkip {
+                let minutes = Int(minimumGap / 60)
+                Log.app.info("Auto-clean waits: the last clean finished less than \(minutes) \(minutes == 1 ? "minute" : "minutes") ago")
+            }
             return false
         }
-        clean(trigger: trigger)
+        clean(trigger: trigger, minimumGap: minimumGap)
         return true
     }
 

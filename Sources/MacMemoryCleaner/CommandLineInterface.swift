@@ -13,6 +13,7 @@ enum CommandLineInterface {
         var command: Command
         var json = false
         var demo = false
+        var dryRun = false
         var skipFlush = false
         var skipPressure = false
         var skipPurge = false
@@ -29,14 +30,15 @@ enum CommandLineInterface {
         "--help": .help, "-h": .help,
     ]
 
-    /// Any dash argument selects the command line, so a typo fails with a usage error
-    /// instead of starting a second menu bar app. Arguments that macOS and Xcode pass to
-    /// apps, such as `-NSDocumentRevisionsDebugMode YES`, still start the app.
+    /// Arguments that macOS and Xcode pass to apps, such as `-NSDocumentRevisionsDebugMode YES`.
+    private static func isSystemArgument(_ argument: String) -> Bool {
+        ["-NS", "-Apple", "-psn_", "-com.apple."].contains { argument.hasPrefix($0) }
+    }
+
+    /// Any other dash argument selects the command line, so a typo fails with a usage error
+    /// instead of starting a second menu bar app.
     static func handles(_ arguments: [String]) -> Bool {
-        let systemPrefixes = ["-NS", "-Apple", "-psn_", "-com.apple."]
-        return arguments.contains { argument in
-            argument.hasPrefix("-") && !systemPrefixes.contains { argument.hasPrefix($0) }
-        }
+        arguments.contains { $0.hasPrefix("-") && !isSystemArgument($0) }
     }
 
     static func run(_ arguments: [String]) -> Never {
@@ -72,18 +74,24 @@ enum CommandLineInterface {
         }
 
         while let argument = remaining.popFirst() {
+            if isSystemArgument(argument) {
+                // Skip it and its value, if it has one (`-psn_…` does not).
+                if !argument.hasPrefix("-psn_"), let value = remaining.first, !value.hasPrefix("-") { remaining.removeFirst() }
+                continue
+            }
             if let named = commandNames[argument] {
                 try setCommand(named, argument)
                 continue
             }
             switch argument {
             case "--screenshots":
-                guard let directory = remaining.popFirst(), !directory.hasPrefix("--") else {
+                guard let directory = remaining.popFirst(), !directory.hasPrefix("-") else {
                     throw UsageError(message: "--screenshots needs a folder, for example: --screenshots docs")
                 }
                 try setCommand(.screenshots(directory: directory), argument)
             case "--json": invocation.json = true
             case "--demo": invocation.demo = true
+            case "--dry-run": invocation.dryRun = true
             case "--no-sync": invocation.skipFlush = true
             case "--no-pressure": invocation.skipPressure = true
             case "--no-purge": invocation.skipPurge = true
@@ -99,7 +107,7 @@ enum CommandLineInterface {
         }
 
         invocation.command = command ?? .help
-        if command == nil, arguments.contains(where: { $0 != "--help" && $0 != "-h" }) {
+        if command == nil, arguments.contains(where: { $0.hasPrefix("--") }) {
             throw UsageError(message: "Add a command, for example --stats or --clean.")
         }
 
@@ -112,6 +120,9 @@ enum CommandLineInterface {
         }
         if invocation.json && ![.stats, .clean, .status].contains(invocation.command) {
             throw UsageError(message: "--json works only with --stats, --clean, and --status.")
+        }
+        if invocation.dryRun && ![.setup, .removeSetup].contains(invocation.command) {
+            throw UsageError(message: "--dry-run works only with --setup and --remove-setup.")
         }
         if invocation.demo, case .screenshots = invocation.command {} else if invocation.demo {
             throw UsageError(message: "--demo works only with --screenshots.")
@@ -149,6 +160,16 @@ enum CommandLineInterface {
 
         case .showRule:
             print(AdminAccess.sudoersRule)
+            return 0
+
+        case .setup where invocation.dryRun:
+            print("# --setup runs these commands as root:")
+            print(AdminAccess.installCommands.joined(separator: "\n"))
+            return 0
+
+        case .removeSetup where invocation.dryRun:
+            print("# --remove-setup runs these commands as root:")
+            print(AdminAccess.uninstallCommands.joined(separator: "\n"))
             return 0
 
         case .setup:
@@ -191,9 +212,10 @@ enum CommandLineInterface {
         }
 
         let json = invocation.json
-        guard let report = await Cleaner.clean(options: options, trigger: .commandLine, progress: { step in
+        let result = await Cleaner.clean(options: options, trigger: .commandLine) { step in
             if !json { print(step.progressTitle) }
-        }) else {
+        }
+        guard case .finished(let report) = result else {
             printError("Another clean is already running.")
             return 1
         }
@@ -264,6 +286,8 @@ enum CommandLineInterface {
           --setup              Set up admin access. Shows the macOS password prompt.
           --show-rule          Print the sudoers rule that --setup installs.
           --remove-setup       Remove admin access. Shows the macOS password prompt.
+              --dry-run            With --setup or --remove-setup: print the commands that
+                                   would run as root, and run nothing.
           --version            Print the app version.
           --help               Print this help.
 
