@@ -2,10 +2,19 @@ import Darwin
 import Foundation
 
 /// The kernel's memory-pressure level, as reported by `kern.memorystatus_vm_pressure_level`.
-nonisolated enum MemoryPressure: Int, Sendable, Codable {
-    case normal = 1
-    case warning = 2
-    case critical = 4
+nonisolated enum MemoryPressure: String, Sendable, Codable {
+    case normal
+    case warning
+    case critical
+
+    /// Maps the kernel's level (1, 2, or 4) to a case.
+    init(kernelLevel: Int32) {
+        switch kernelLevel {
+        case 4: self = .critical
+        case 2: self = .warning
+        default: self = .normal
+        }
+    }
 
     var title: String {
         switch self {
@@ -43,18 +52,21 @@ nonisolated struct MemorySnapshot: Sendable, Equatable, Codable {
 
     var usedFraction: Double { total == 0 ? 0 : Double(used) / Double(total) }
 
-    static func current() -> MemorySnapshot {
+    /// Reads memory statistics from the kernel. Returns `nil` in the unlikely case the kernel
+    /// refuses, instead of a reading of all zeros that would look like memory ran out.
+    static func current() -> MemorySnapshot? {
         var hostPageSize: vm_size_t = 0
         host_page_size(mach_host_self(), &hostPageSize)
         let pageSize = UInt64(hostPageSize)
 
         var stats = vm_statistics64()
         var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
-        _ = withUnsafeMutablePointer(to: &stats) {
+        let status = withUnsafeMutablePointer(to: &stats) {
             $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
                 host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
             }
         }
+        guard status == KERN_SUCCESS else { return nil }
 
         let purgeable = UInt64(stats.purgeable_count) * pageSize
         let anonymous = UInt64(stats.internal_page_count) * pageSize
@@ -75,9 +87,15 @@ nonisolated struct MemorySnapshot: Sendable, Equatable, Codable {
             swapUsed: swap.xsu_used,
             swapTotal: swap.xsu_total,
             availablePercent: total == 0 ? 100 : Int((Double(free + cachedFiles) / Double(total) * 100).rounded()),
-            pressure: MemoryPressure(rawValue: Int(pressureLevel)) ?? .normal
+            pressure: MemoryPressure(kernelLevel: pressureLevel)
         )
     }
+
+    /// Placeholder until the first reading arrives.
+    static let empty = MemorySnapshot(
+        total: ProcessInfo.processInfo.physicalMemory, free: 0, appMemory: 0, wired: 0, compressed: 0,
+        cachedFiles: 0, swapUsed: 0, swapTotal: 0, availablePercent: 100, pressure: .normal
+    )
 
     private static func sysctlValue<T>(_ name: String) -> T? {
         let value = UnsafeMutablePointer<T>.allocate(capacity: 1)
@@ -85,21 +103,5 @@ nonisolated struct MemorySnapshot: Sendable, Equatable, Codable {
         var size = MemoryLayout<T>.size
         guard sysctlbyname(name, value, &size, nil, 0) == 0 else { return nil }
         return value.pointee
-    }
-}
-
-nonisolated enum ByteFormat {
-    /// Formats bytes the way Activity Monitor does (base 1024, one decimal).
-    static func string(_ bytes: UInt64) -> String {
-        let gib = Double(bytes) / 1_073_741_824
-        if gib >= 1 {
-            return gib.formatted(.number.precision(.fractionLength(gib >= 100 ? 0 : 1))) + " GB"
-        }
-        let mib = Double(bytes) / 1_048_576
-        return mib.formatted(.number.precision(.fractionLength(0))) + " MB"
-    }
-
-    static func string(_ bytes: Int64) -> String {
-        bytes < 0 ? "−" + string(UInt64(-bytes)) : string(UInt64(bytes))
     }
 }

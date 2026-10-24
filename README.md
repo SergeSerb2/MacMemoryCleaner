@@ -1,114 +1,163 @@
-<img src="Resources/AppIcon.png" width="96" height="96" alt="">
+<p align="center">
+  <img src="Resources/AppIcon.png" width="128" height="128" alt="Mac Memory Cleaner icon">
+</p>
 
-# Mac Memory Cleaner
+<h1 align="center">Mac Memory Cleaner</h1>
 
-A one-click memory cleaner for the macOS menu bar. It is a macOS take on
-[Windows Memory Cleaner](https://github.com/IgorMundstein/WinMemoryCleaner): no tricks, just the
-memory tools macOS already ships, behind one button.
+<p align="center">
+  Free up RAM with one click, right from the menu bar.<br>
+  A macOS take on <a href="https://github.com/IgorMundstein/WinMemoryCleaner">Windows Memory Cleaner</a>.
+</p>
 
-Use it before you start something heavy, or let it clean automatically when memory runs short,
-so macOS moves less memory to swap. It is made for Macs with little RAM, such as an 8 GB
-MacBook Air.
+<p align="center">
+  <a href="https://github.com/SergeSerb2/MacMemoryCleaner/releases/latest"><img src="https://img.shields.io/github/v/release/SergeSerb2/MacMemoryCleaner?label=download&color=2563eb" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/macOS-27%2B-1f2937" alt="macOS 27 or later">
+  <img src="https://img.shields.io/badge/Apple%20silicon-only-1f2937" alt="Apple silicon only">
+  <a href="https://github.com/SergeSerb2/MacMemoryCleaner/actions/workflows/ci.yml"><img src="https://github.com/SergeSerb2/MacMemoryCleaner/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/SergeSerb2/MacMemoryCleaner?color=2ea44f" alt="MIT License"></a>
+</p>
 
-<img src="docs/panel-dark.png" width="340" alt="The menu bar panel: memory used, a breakdown bar, the Clean Memory button, and the apps that use the most memory">
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/panel-dark.png">
+    <img src="docs/panel-light.png" width="404" alt="The Mac Memory Cleaner panel: memory used, a breakdown bar, a Clean Memory button, and the apps that use the most memory">
+  </picture>
+</p>
 
-## Requirements
+## Why
 
-- macOS 27 or later
-- Apple silicon
+macOS manages memory well, but on a Mac with little RAM, such as an 8 GB MacBook Air, it
+runs short fast. Then macOS compresses memory and moves it to swap on the disk, and
+everything gets slower.
 
-## What "Clean Memory" does
+Mac Memory Cleaner gives you one button that runs the memory tools macOS already ships.
+It clears cached files, asks every app to release memory it does not need, and shows you
+which apps hold the most. Clean before you start something heavy, or let it clean
+automatically when memory runs short.
 
-The button runs three steps in order. You can turn each one off in Settings › Cleaning.
+There are no tricks. The app does not fill RAM to force macOS to page memory out, as some
+"RAM boosters" do. It makes no network connections and collects no data.
+
+## Features
+
+- **Live memory view.** Memory used, a breakdown like Activity Monitor (app memory, wired,
+  compressed, cached files, free, swap), and the memory-pressure level.
+- **One-click clean.** The result shows how much memory was freed.
+- **Top apps.** The apps that use the most memory, helper processes included, each with a
+  Quit button. Quitting an app frees more memory than any cache flush. Hold Option, or
+  right-click, to force quit.
+- **Auto-clean.** Clean when macOS reports memory pressure, or when available memory falls
+  below a level you choose.
+- **Keyboard shortcut.** Clean from any app with ⌃⌥⌘M, or a shortcut you choose.
+- **Notifications** after shortcut and automatic cleans.
+- **Open at login.**
+- **Command line** for scripts, Shortcuts, and cron.
+
+## Install
+
+1. Download **MacMemoryCleaner.dmg** from the
+   [latest release](https://github.com/SergeSerb2/MacMemoryCleaner/releases/latest).
+2. Open it, and drag **Mac Memory Cleaner** to **Applications**.
+3. Open the app. macOS blocks it the first time, because the app is not notarized by Apple
+   (see [FAQ](#why-does-macos-say-the-app-cannot-be-opened)). Open **System Settings ›
+   Privacy & Security**, scroll down, and click **Open Anyway**.
+4. Click the chip icon in the menu bar, then click **Set Up…** and enter your password.
+   You do this only once.
+5. Click **Clean Memory**.
+
+Requires macOS 27 or later on a Mac with Apple silicon.
+
+## How it works
+
+**Clean Memory** runs three steps in order. You can turn each one off in **Settings ›
+Cleaning**.
 
 | Step | What it does | Windows Memory Cleaner equivalent |
 | :--- | :--- | :--- |
 | **Flush pending writes** | Runs `sync`. Writes changes that wait in RAM to the disk, so macOS can release those pages. | Modified file cache, modified page list |
-| **Ask apps to release memory** | Runs `memory_pressure -S` for two seconds. This sends the same low-memory signal macOS sends when RAM runs short. Apps drop caches, memory allocators return free pages, idle system services quit, and macOS purges purgeable memory. | Working set, system file cache |
+| **Ask apps to release memory** | Runs `memory_pressure -S` for two seconds. This sends the same low-memory signal macOS sends when RAM runs short. Apps drop caches and return memory they do not need, and macOS can drop purgeable memory. **Strong** (the default) sends the critical level; **Standard** sends the warning level. | Working set, system file cache |
 | **Purge disk cache** | Runs `purge`. Removes cached files from RAM. | Standby list |
 
-The panel also lists the apps that hold the most memory, including their helper processes.
-Quitting an app frees far more memory than any cache flush, so each app has a Quit button.
-Hold Option, or right-click, to force quit.
+### See it work
 
-### Proof that it works
+Check the effect in **Activity Monitor › Memory**:
 
-You can check the effect yourself in Activity Monitor › Memory, or with the command line
-(see below). On a test Mac, after reading 4 GB of files:
+1. Note the **Cached Files** value at the bottom of the window.
+2. Open and use a few large apps, then quit them. **Cached Files** grows.
+3. Click **Clean Memory**. **Cached Files** drops by about the amount the panel says it
+   freed.
+
+The panel shows where the freed memory came from, for example
+"Freed 1.3 GB · Cached files −1.3 GB". The command line shows the same numbers. A real run
+on a 48 GB Mac, right after reading 4 GB of files:
 
 ```text
-Before  used 28.4 GB of 48.0 GB · free 8.2 GB  · cached files 10.5 GB · swap 3.4 GB
-After   used 29.6 GB of 48.0 GB · free 16.1 GB · cached files 2.0 GB  · swap 3.0 GB
-Freed 7.8 GB in 9.8 s
+$ MacMemoryCleaner --clean
+Flushing pending writes…
+Asking apps to release memory…
+Purging disk cache…
+
+Before  used 32.2 GB of 48.0 GB · free 125 MB · cached files 14.8 GB · compressed 5.9 GB · ...
+After   used 30.5 GB of 48.0 GB · free 14.5 GB · cached files 2.1 GB · compressed 5.4 GB · ...
+  ✓ Flush pending writes
+  ✓ Ask apps to release memory
+  ✓ Purge disk cache
+Freed 14.3 GB in 23.6 s (cached files −12.6 GB)
 ```
+
+Most of the freed memory is usually cached files. macOS would drop them on its own when an
+app needs the space, but a clean frees them at once, before macOS starts to compress and
+swap app memory.
 
 ### What it cannot do
 
 - **It cannot empty swap.** macOS reads swapped memory back only when an app needs it.
-  Cleaning early, before memory runs out, is how this app keeps swap from growing.
-- **macOS refills the file cache over time.** That is normal and good. Cached files make apps
-  open faster. Right after a purge, apps can open files a little slower.
-
-## Features
-
-- **Menu bar panel** with memory used, a breakdown like Activity Monitor (app memory, wired,
-  compressed, cached files, free, swap), and the memory-pressure level
-- **One-click clean** with a "Freed X GB" result
-- **Top apps** by memory, with Quit and Force Quit
-- **Auto-clean** when macOS reports memory pressure, or when available memory falls below a
-  threshold, with a minimum wait between cleans
-- **Global shortcut**, by default ⌃⌥⌘M, which you can change in Settings
-- **Notifications** after shortcut and automatic cleans
-- **Open at login**
-- **Command-line mode** for scripts, Shortcuts, and cron
-
-## Install
-
-### Build on the Mac that will run it
-
-You need Xcode 27 or the Command Line Tools (`xcode-select --install`).
-
-```sh
-git clone <this repository> macmemorycleaner
-cd macmemorycleaner
-scripts/build.sh --install
-```
-
-The script builds `build/Mac Memory Cleaner.app`, signs it with your Apple Development or
-Developer ID certificate (ad-hoc if you have none), copies it to `/Applications`, and opens it.
-
-### Copy a build to another Mac
-
-`scripts/build.sh` also makes `build/MacMemoryCleaner.dmg` (and a `.zip`). Open the disk image
-on the other Mac and drag the app to Applications.
-
-The build is not notarized. If the file arrived by AirDrop or download, macOS quarantines it,
-and Gatekeeper blocks the first launch. To allow it, use one of these:
-
-- Open System Settings › Privacy & Security, then click **Open Anyway**.
-- Or run: `xattr -dr com.apple.quarantine "/Applications/Mac Memory Cleaner.app"`
-
-Copying with `scp`, `rsync`, or a USB drive does not add the quarantine flag.
-
-### First launch
-
-1. Click the chip icon in the menu bar.
-2. Click **Set Up…** and enter your password. You do this once.
-3. Click **Clean Memory**.
+  Cleaning early, before memory runs out, is how the app keeps swap from growing.
+- **macOS refills the cache.** That is normal and good: cached files make apps open
+  faster. Right after a purge, apps can open files a little slower.
+- **It cannot shrink an app that really needs its memory.** If one app holds most of your
+  RAM, quit it from the Top Apps list.
 
 ## Admin access
 
-`purge` and `memory_pressure -S` only run as root. Setup installs this rule as
-`/etc/sudoers.d/macmemorycleaner` (owner root, mode 0440, checked with `visudo` first).
-`501` is your numeric user ID:
+`purge` and `memory_pressure -S` run only as root. The one-time setup installs a sudoers
+rule that lets **your account** run **only these three exact command lines** without a
+password:
 
 ```text
-#501 ALL = (root) NOPASSWD: /usr/sbin/purge, /usr/bin/memory_pressure -S -l warn -s 2, /usr/bin/memory_pressure -S -l critical -s 2
+/usr/sbin/purge
+/usr/bin/memory_pressure -S -l warn -s 2
+/usr/bin/memory_pressure -S -l critical -s 2
 ```
 
-The rule allows only those exact command lines, only for your account. To see the exact rule
-before you set it up, run the app binary with `--show-rule`. To remove it, click **Remove…**
-in Settings › Cleaning, or run `sudo rm /etc/sudoers.d/macmemorycleaner`.
+The rule lives in `/etc/sudoers.d/macmemorycleaner-<your user ID>`. To see it before you
+install it, run the app binary with `--show-rule`. To remove it, click **Remove…** in
+**Settings › Cleaning**. [SECURITY.md](SECURITY.md) explains the security model and its
+trade-off.
+
+Without setup, the app still flushes pending writes, shows memory use, and lists the top
+apps. If you do not want setup, click **Not Now** in the panel.
+
+## Privacy
+
+The app makes no network connections and collects no data. It reads memory statistics
+from macOS, and it reads the memory use of apps that run as your user.
+
+## Settings
+
+| Tab | Options |
+| :--- | :--- |
+| **General** | Open at login, show memory used in the menu bar, notifications, keyboard shortcut |
+| **Cleaning** | Turn each clean step on or off, signal strength, admin access |
+| **Auto-Clean** | Clean on memory pressure, clean below an available-memory level, wait between automatic cleans |
+| **About** | Version, links, and license |
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/settings-cleaning-dark.png">
+    <img src="docs/settings-cleaning-light.png" width="500" alt="Settings, Cleaning tab: toggles for the three clean steps, signal strength, and admin access">
+  </picture>
+</p>
 
 ## Command line
 
@@ -116,40 +165,97 @@ The app binary also works from Terminal:
 
 ```sh
 MMC="/Applications/Mac Memory Cleaner.app/Contents/MacOS/MacMemoryCleaner"
+
 "$MMC" --stats              # print memory use
 "$MMC" --clean              # clean with the steps chosen in Settings
 "$MMC" --clean --no-purge   # skip a step: --no-sync, --no-pressure, --no-purge
-"$MMC" --clean --json       # machine-readable before/after report
-"$MMC" --status             # is admin access set up? (exit 2 if not)
+"$MMC" --clean --json       # machine-readable before-and-after report
+"$MMC" --status             # is admin access set up? (exit status 2 if not)
+"$MMC" --clean --pressure=standard   # gentler signal for this clean
 "$MMC" --show-rule          # print the sudoers rule that --setup installs
 "$MMC" --setup              # set up admin access
 "$MMC" --remove-setup       # remove admin access
+"$MMC" --version
 "$MMC" --help
 ```
 
-Exit status: 0 success, 1 a step failed, 2 admin access is not set up.
+Exit status: 0 success, 1 a step failed or another clean was running, 2 admin access is not
+set up, 64 usage error.
 
-## Uninstall
+Only one clean runs at a time. A clean from the command line counts for the wait between
+automatic cleans, so the menu bar app does not clean again right after it.
 
-1. Settings › Cleaning › Admin Access › **Remove…**
-2. Settings › General: turn off **Open at login**.
-3. Quit the app and delete it from `/Applications`.
+## FAQ
 
-## Development
+### Does freeing memory help on macOS?
+
+Sometimes. macOS uses free RAM as a file cache on purpose, and it drops that cache when an
+app needs memory. On a Mac with plenty of RAM, you gain little. On a Mac with little RAM,
+memory runs short often, and macOS starts to compress and swap app memory while it still
+holds caches. A clean before a heavy task, or an automatic clean at the first sign of
+pressure, keeps more of your apps in RAM.
+
+### Why does "Memory Used" go back up after a clean?
+
+Apps load their caches again as you use them. That is normal. The clean gives memory back
+when you need it, for example before you open a large project or a game.
+
+### Why does macOS say the app cannot be opened?
+
+Apple notarizes apps only for paid developer accounts, and this free, open-source build is
+not notarized. Click **Open Anyway** in **System Settings › Privacy & Security** once. You
+can also remove the quarantine flag:
+`xattr -dr com.apple.quarantine "/Applications/Mac Memory Cleaner.app"`. If you prefer, build
+the app yourself from source.
+
+### Does it work on Intel Macs or older macOS versions?
+
+No. It needs macOS 27, and macOS 27 runs only on Apple silicon.
+
+### The keyboard shortcut does nothing
+
+Another app may use the same shortcut. **Settings › General** shows a warning if so. Pick a
+different shortcut there. A shortcut must include ⌃ or ⌥, so it cannot replace a standard
+shortcut such as ⌘W.
+
+### I get no notifications
+
+Notifications appear for shortcut and automatic cleans, not for cleans from the open panel.
+If you clicked **Don't Allow** when macOS asked, **Settings › General** shows a button that
+opens the notification settings for the app.
+
+### How do I uninstall it?
+
+1. **Settings › Cleaning › Admin access › Remove…**
+2. **Settings › General**: turn off **Open at login**.
+3. Quit the app, and move it from **Applications** to the Trash.
+4. Optional: delete its settings with `defaults delete com.serbinenko.MacMemoryCleaner`.
+
+## Build from source
+
+You need Xcode 27, or the Command Line Tools for Xcode 27 (`xcode-select --install`).
 
 ```sh
-swift build                                   # debug build
-scripts/build.sh                              # signed app bundle in build/
-swift scripts/make-icon.swift Resources/AppIcon.icns
-"build/Mac Memory Cleaner.app/Contents/MacOS/MacMemoryCleaner" --screenshots docs
-log stream --predicate 'subsystem == "com.serbinenko.MacMemoryCleaner"'
+git clone https://github.com/SergeSerb2/MacMemoryCleaner.git
+cd MacMemoryCleaner
+scripts/build.sh --install
 ```
 
-`--screenshots` renders the panel and every Settings tab, in light and dark mode, with live
-data. With Screen Recording permission it captures real windows, so Liquid Glass renders as it
-does in the app.
+`scripts/build.sh` builds `build/Mac Memory Cleaner.app`, `build/MacMemoryCleaner.zip`, and
+`build/MacMemoryCleaner.dmg`. It signs with your Developer ID or Apple Development
+certificate if you have one, and ad-hoc otherwise. `--install` copies the app to
+`/Applications` and opens it.
+
+## Contributing
+
+Bug reports and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). Please
+report security problems privately, as [SECURITY.md](SECURITY.md) describes.
 
 ## Credits
 
 Inspired by [WinMemoryCleaner](https://github.com/IgorMundstein/WinMemoryCleaner) by Igor
-Mundstein.
+Mundstein. Mac Memory Cleaner shares its idea and its goal of transparency, not its code.
+
+## License
+
+[MIT](LICENSE) © 2026 Serge Alex Serbinenko

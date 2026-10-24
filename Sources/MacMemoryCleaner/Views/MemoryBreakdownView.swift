@@ -3,6 +3,7 @@ import SwiftUI
 /// The headline number, the stacked memory bar, and its legend.
 struct MemoryBreakdownView: View {
     let snapshot: MemorySnapshot
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -14,17 +15,18 @@ struct MemoryBreakdownView: View {
                     HStack(alignment: .firstTextBaseline, spacing: 5) {
                         Text(ByteFormat.string(snapshot.used))
                             .font(.system(size: 26, weight: .semibold, design: .rounded))
-                            .contentTransition(.numericText())
+                            .contentTransition(reduceMotion ? .identity : .numericText())
                         Text("of \(ByteFormat.string(snapshot.total))")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                     .monospacedDigit()
                 }
+                .accessibilityElement(children: .combine)
                 Spacer()
                 PressureBadge(pressure: snapshot.pressure)
             }
-            .animation(.smooth, value: snapshot.used)
+            .animation(reduceMotion ? nil : .smooth, value: snapshot.used)
 
             MemoryBar(snapshot: snapshot)
 
@@ -85,6 +87,7 @@ enum MemorySegment {
 
 private struct MemoryBar: View {
     let snapshot: MemorySnapshot
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let segments: [(MemorySegment, UInt64)] = [
@@ -103,7 +106,7 @@ private struct MemoryBar: View {
                 }
                 Spacer(minLength: 0)
             }
-            .animation(.smooth(duration: 0.6), value: snapshot)
+            .animation(reduceMotion ? nil : .smooth(duration: 0.6), value: snapshot)
         }
         .frame(height: 12)
         .background(.quaternary)
@@ -116,6 +119,7 @@ private struct MemoryBar: View {
 private struct LegendItem: View {
     let segment: MemorySegment
     let value: UInt64
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 6) {
@@ -133,9 +137,12 @@ private struct LegendItem: View {
             Spacer(minLength: 4)
             Text(ByteFormat.string(value))
                 .monospacedDigit()
-                .contentTransition(.numericText())
+                .contentTransition(reduceMotion ? .identity : .numericText())
         }
         .help(segment.help)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(segment.title), \(ByteFormat.string(value))")
+        .accessibilityHint(segment.help)
     }
 }
 
@@ -160,5 +167,7 @@ struct PressureBadge: View {
         .padding(.vertical, 4)
         .background(color.opacity(0.15), in: .capsule)
         .help("Memory pressure, as macOS reports it.")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Memory pressure: \(pressure.title)")
     }
 }

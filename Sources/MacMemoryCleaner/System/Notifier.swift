@@ -40,11 +40,16 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             return
         }
         let content = UNMutableNotificationContent()
-        content.title = report.freed > 0 ? "Freed \(ByteFormat.string(report.freed))" : "Memory cleaned"
-        var lines = [report.trigger.title]
-        lines.append("\(ByteFormat.string(report.after.used)) used · Swap \(ByteFormat.string(report.after.swapUsed))")
-        if report.needsSetup { lines.append("Deep clean needs one-time setup in Settings.") }
-        content.body = lines.joined(separator: "\n")
+        let after = "\(ByteFormat.string(report.after.used)) used · \(ByteFormat.string(report.after.swapUsed)) swap used"
+        if let failure = report.failures.first {
+            content.title = "“\(failure.step.title)” failed"
+            content.body = [report.trigger.title, failure.message].joined(separator: "\n")
+        } else {
+            content.title = report.freed > 0 ? "Freed \(ByteFormat.string(report.freed))" : "Free memory unchanged"
+            var lines = [report.trigger.title, after]
+            if report.needsSetup { lines.append("Set up admin access in Settings › Cleaning for a full clean.") }
+            content.body = lines.joined(separator: "\n")
+        }
         let request = UNNotificationRequest(identifier: "clean-\(report.finished.timeIntervalSince1970)", content: content, trigger: nil)
         do {
             try await center.add(request)

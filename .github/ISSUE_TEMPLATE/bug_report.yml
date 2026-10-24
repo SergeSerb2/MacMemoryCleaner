@@ -1,0 +1,42 @@
+name: Bug report
+description: Something does not work as expected.
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Tell us what you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Click the menu bar icon
+        2. Click Clean Memory
+        3. ...
+  - type: input
+    id: app-version
+    attributes:
+      label: App version
+      description: Settings › About, or Finder › Get Info on the app.
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version and Mac model
+      placeholder: "macOS 27.2, MacBook Air M2, 8 GB"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log
+      description: |
+        Output of this command, run right after the problem:
+        `log show --last 10m --info --predicate 'subsystem == "com.serbinenko.MacMemoryCleaner"'`
+      render: text

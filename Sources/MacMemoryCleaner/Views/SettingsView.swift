@@ -5,7 +5,8 @@ struct SettingsView: View {
         TabView {
             Tab("General", systemImage: "gearshape") { GeneralSettings() }
             Tab("Cleaning", systemImage: "sparkles") { CleaningSettings() }
-            Tab("Auto-Clean", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90") { AutoCleanSettings() }
+            Tab("Auto-Clean", systemImage: "timer") { AutoCleanSettings() }
+            Tab("About", systemImage: "info.circle") { AboutSettings() }
         }
         .frame(width: 500)
     }
@@ -13,29 +14,22 @@ struct SettingsView: View {
 
 struct GeneralSettings: View {
     @Environment(AppState.self) private var state
-    @AppStorage(Preference.showUsageInMenuBar) private var showUsage = true
-    @AppStorage(Preference.notifyAfterClean) private var notify = true
-    @AppStorage(Preference.hotKeyEnabled) private var hotKeyEnabled = true
-    @State private var launchAtLogin = LoginItem.isEnabled
+    @AppStorage(Preference.showUsageInMenuBar) private var showUsage: Bool
+    @AppStorage(Preference.notifyAfterClean) private var notify: Bool
+    @AppStorage(Preference.hotKeyEnabled) private var hotKeyEnabled: Bool
+    /// Mirrors the system's login item state. Only the toggle's setter changes it.
+    @State private var launchAtLogin = LoginItem.isEnabled || LoginItem.needsApproval
+    @State private var loginItemNeedsApproval = LoginItem.needsApproval
     @State private var loginItemError: String?
     @State private var notificationsDenied = false
 
     var body: some View {
         Form {
             Section {
-                Toggle("Open at login", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { _, enabled in
-                        do {
-                            try LoginItem.setEnabled(enabled)
-                            loginItemError = nil
-                        } catch {
-                            loginItemError = error.localizedDescription
-                            launchAtLogin = LoginItem.isEnabled
-                        }
-                    }
-                if LoginItem.needsApproval {
-                    LabeledContent("macOS needs you to allow this app in Login Items.") {
-                        Button("Open Login Items…") { LoginItem.openSystemSettings() }
+                Toggle("Open at login", isOn: launchAtLoginBinding)
+                if loginItemNeedsApproval {
+                    LabeledContent("Allow Mac Memory Cleaner in Login Items to finish.") {
+                        Button("Open Login Items") { LoginItem.openSystemSettings() }
                     }
                     .font(.caption)
                 }
@@ -45,7 +39,7 @@ struct GeneralSettings: View {
                 Toggle("Show memory used in the menu bar", isOn: $showUsage)
                 Toggle(isOn: $notify) {
                     Text("Notify when a clean finishes")
-                    Text("For cleans that run while the panel is closed: shortcut and automatic cleans.")
+                    Text("For shortcut and automatic cleans.")
                 }
                 .onChange(of: notify) { _, enabled in
                     guard enabled else { return }
@@ -56,7 +50,7 @@ struct GeneralSettings: View {
                 }
                 if notify && notificationsDenied {
                     LabeledContent("Notifications are off for this app in System Settings.") {
-                        Button("Turn On…") { Notifier.openSystemSettings() }
+                        Button("Open Notification Settings") { Notifier.openSystemSettings() }
                     }
                     .font(.caption)
                 }
@@ -81,37 +75,60 @@ struct GeneralSettings: View {
         .fixedSize(horizontal: false, vertical: true)
         .task { notificationsDenied = await state.notificationsDenied() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            launchAtLogin = LoginItem.isEnabled
+            // The user may have changed either setting in System Settings.
+            syncLoginItem()
             Task { notificationsDenied = await state.notificationsDenied() }
         }
+    }
+
+    /// Writes go to the system and reads come back from it, so syncing the state never
+    /// registers or unregisters the login item by accident.
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding {
+            launchAtLogin
+        } set: { enabled in
+            do {
+                try LoginItem.setEnabled(enabled)
+                loginItemError = nil
+            } catch {
+                loginItemError = error.localizedDescription
+            }
+            syncLoginItem()
+        }
+    }
+
+    private func syncLoginItem() {
+        loginItemNeedsApproval = LoginItem.needsApproval
+        launchAtLogin = LoginItem.isEnabled || loginItemNeedsApproval
     }
 }
 
 struct CleaningSettings: View {
     @Environment(AppState.self) private var state
-    @AppStorage(Preference.flushWrites) private var flushWrites = true
-    @AppStorage(Preference.pressureSignal) private var pressureSignal = true
-    @AppStorage(Preference.pressureStrength) private var strength = PressureStrength.strong
-    @AppStorage(Preference.purgeDiskCache) private var purge = true
+    @AppStorage(Preference.flushWrites) private var flushWrites: Bool
+    @AppStorage(Preference.pressureSignal) private var pressureSignal: Bool
+    @AppStorage(Preference.pressureStrength) private var strength: PressureStrength
+    @AppStorage(Preference.purgeDiskCache) private var purge: Bool
 
     var body: some View {
         Form {
             Section {
                 Toggle(isOn: $flushWrites) {
-                    Text("Flush pending writes")
+                    Text(CleanStep.flushWrites.title)
                     Text("Saves changes that wait in RAM to the disk, so macOS can release that memory. Runs `sync`.")
                 }
                 Toggle(isOn: $pressureSignal) {
-                    Text("Ask apps to release memory")
-                    Text("Sends the macOS low-memory signal for two seconds. Apps and idle system services drop caches and return unused memory. Runs `memory_pressure`.")
+                    Text(CleanStep.releaseAppMemory.title)
+                    Text("Sends the macOS low-memory signal for two seconds. Apps drop caches and return memory they do not need. Runs `memory_pressure`.")
                 }
                 Picker("Signal strength", selection: $strength) {
                     ForEach(PressureStrength.allCases) { Text($0.title).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 .disabled(!pressureSignal)
+                .help("Standard sends the warning level. Strong sends the critical level, so apps release more.")
                 Toggle(isOn: $purge) {
-                    Text("Purge disk cache")
+                    Text(CleanStep.purgeDiskCache.title)
                     Text("Removes cached files from RAM. Apps can open files a little slower right after a clean. Runs `purge`.")
                 }
             } header: {
@@ -122,16 +139,14 @@ struct CleaningSettings: View {
                 LabeledContent {
                     adminControls
                 } label: {
-                    Text("Deep clean")
-                    Text("The last two steps need admin rights.")
+                    Text("Admin access")
+                    Text("Needed for “\(CleanStep.releaseAppMemory.title)” and “\(CleanStep.purgeDiskCache.title)”.")
                 }
                 if let error = state.adminError {
                     Text(error).font(.caption).foregroundStyle(.red)
                 }
-            } header: {
-                Text("Admin Access")
             } footer: {
-                Text("Setup adds `/etc/sudoers.d/macmemorycleaner`. That rule lets your account run only `purge` and `memory_pressure` as root without a password. You can remove it here at any time.")
+                Text("Setup adds a rule in `/etc/sudoers.d` that lets your account run only `purge` and `memory_pressure` as root without a password. You can remove it here at any time.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -164,10 +179,11 @@ struct CleaningSettings: View {
 
 struct AutoCleanSettings: View {
     @Environment(AppState.self) private var state
-    @AppStorage(Preference.autoCleanOnPressure) private var onPressure = true
-    @AppStorage(Preference.autoCleanBelowThreshold) private var belowThreshold = false
-    @AppStorage(Preference.autoCleanThreshold) private var threshold = 20
-    @AppStorage(Preference.autoCleanMinimumMinutes) private var minimumMinutes = 10
+    @AppStorage(Preference.autoCleanOnPressure) private var onPressure: Bool
+    @AppStorage(Preference.autoCleanBelowThreshold) private var belowThreshold: Bool
+    @AppStorage(Preference.autoCleanThreshold) private var threshold: Int
+    @AppStorage(Preference.autoCleanMinimumMinutes) private var minimumMinutes: Int
+    @AppStorage(Preference.notifyAfterClean) private var notify: Bool
 
     var body: some View {
         Form {
@@ -198,16 +214,53 @@ struct AutoCleanSettings: View {
 
             Section {
                 Picker("Wait between automatic cleans", selection: $minimumMinutes) {
-                    ForEach([5, 10, 15, 30, 60], id: \.self) { Text("\($0) minutes").tag($0) }
+                    ForEach([5, 10, 15, 30], id: \.self) { Text("\($0) minutes").tag($0) }
+                    Text("1 hour").tag(60)
                 }
             } footer: {
-                Text("Automatic cleans run quietly. Turn on notifications in General to see each result.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if !notify {
+                    Text("To see each result, turn on “Notify when a clean finishes” in General.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
         .scrollDisabled(true)
         .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+struct AboutSettings: View {
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 96, height: 96)
+                .accessibilityHidden(true)
+            VStack(spacing: 4) {
+                Text(AppInfo.name)
+                    .font(.title2.weight(.semibold))
+                Text("Version \(AppInfo.version) (\(AppInfo.build))")
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            Text("Free up RAM with one click.")
+            HStack(spacing: 12) {
+                Link("Source Code", destination: AppInfo.repository)
+                Link("Report an Issue", destination: AppInfo.issues)
+            }
+            .buttonStyle(.bordered)
+            VStack(spacing: 2) {
+                // Markdown links only work in a literal string, not an interpolated one.
+                Text("Inspired by [Windows Memory Cleaner](https://github.com/IgorMundstein/WinMemoryCleaner) by Igor Mundstein.")
+                Text("Copyright © 2026 Serge Alex Serbinenko. MIT License.")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .multilineTextAlignment(.center)
+        .padding(28)
+        .frame(maxWidth: .infinity)
     }
 }

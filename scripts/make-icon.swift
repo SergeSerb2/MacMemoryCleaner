@@ -1,4 +1,5 @@
-// Draws the app icon and writes Resources/AppIcon.icns.
+// Draws the app icon. Writes Resources/AppIcon.icns for the app bundle and
+// Resources/AppIcon.png (1024 px) for the README.
 // Usage: swift scripts/make-icon.swift Resources/AppIcon.icns
 import AppKit
 

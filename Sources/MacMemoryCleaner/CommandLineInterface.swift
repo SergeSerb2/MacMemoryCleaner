@@ -1,22 +1,57 @@
 import AppKit
-import SwiftUI
 
 /// Headless mode for scripts, Shortcuts, and cron. Run the binary inside the app bundle:
 ///
 ///     "/Applications/Mac Memory Cleaner.app/Contents/MacOS/MacMemoryCleaner" --clean
 enum CommandLineInterface {
-    private static let commands: Set<String> = ["--stats", "--clean", "--setup", "--show-rule", "--remove-setup", "--status", "--screenshots", "--help", "-h"]
+    private enum Command: Equatable {
+        case stats, clean, status, setup, showRule, removeSetup, version, help
+        case screenshots(directory: String)
+    }
 
+    private struct Invocation {
+        var command: Command
+        var json = false
+        var demo = false
+        var skipFlush = false
+        var skipPressure = false
+        var skipPurge = false
+        var pressure: PressureStrength?
+    }
+
+    private struct UsageError: Error {
+        let message: String
+    }
+
+    private static let commandNames: [String: Command] = [
+        "--stats": .stats, "--clean": .clean, "--status": .status, "--setup": .setup,
+        "--show-rule": .showRule, "--remove-setup": .removeSetup, "--version": .version,
+        "--help": .help, "-h": .help,
+    ]
+
+    /// Any dash argument selects the command line, so a typo fails with a usage error
+    /// instead of starting a second menu bar app. Arguments that macOS and Xcode pass to
+    /// apps, such as `-NSDocumentRevisionsDebugMode YES`, still start the app.
     static func handles(_ arguments: [String]) -> Bool {
-        arguments.contains { commands.contains($0) }
+        let systemPrefixes = ["-NS", "-Apple", "-psn_", "-com.apple."]
+        return arguments.contains { argument in
+            argument.hasPrefix("-") && !systemPrefixes.contains { argument.hasPrefix($0) }
+        }
     }
 
     static func run(_ arguments: [String]) -> Never {
-        Task {
-            let status = await execute(arguments)
-            exit(status)
+        let invocation: Invocation
+        do {
+            invocation = try parse(arguments)
+        } catch {
+            printError("\(error.message)\nRun with --help for usage.")
+            exit(64)
         }
-        if arguments.contains("--screenshots") {
+
+        Task {
+            exit(await execute(invocation))
+        }
+        if case .screenshots = invocation.command {
             // Rendering SwiftUI needs a running NSApplication, but not a Dock icon.
             NSApplication.shared.setActivationPolicy(.prohibited)
             NSApplication.shared.run()
@@ -24,39 +59,109 @@ enum CommandLineInterface {
         dispatchMain()
     }
 
-    private static func execute(_ arguments: [String]) async -> Int32 {
-        Preference.registerDefaults()
-        let json = arguments.contains("--json")
+    // MARK: Parsing
 
-        if arguments.contains("--help") || arguments.contains("-h") {
+    private static func parse(_ arguments: [String]) throws(UsageError) -> Invocation {
+        var command: Command?
+        var invocation = Invocation(command: .help)
+        var remaining = arguments[...]
+
+        func setCommand(_ new: Command, _ argument: String) throws(UsageError) {
+            guard command == nil else { throw UsageError(message: "Use only one command. Found an extra \(argument).") }
+            command = new
+        }
+
+        while let argument = remaining.popFirst() {
+            if let named = commandNames[argument] {
+                try setCommand(named, argument)
+                continue
+            }
+            switch argument {
+            case "--screenshots":
+                guard let directory = remaining.popFirst(), !directory.hasPrefix("--") else {
+                    throw UsageError(message: "--screenshots needs a folder, for example: --screenshots docs")
+                }
+                try setCommand(.screenshots(directory: directory), argument)
+            case "--json": invocation.json = true
+            case "--demo": invocation.demo = true
+            case "--no-sync": invocation.skipFlush = true
+            case "--no-pressure": invocation.skipPressure = true
+            case "--no-purge": invocation.skipPurge = true
+            case _ where argument.hasPrefix("--pressure="):
+                let value = argument.dropFirst("--pressure=".count).lowercased()
+                guard let strength = PressureStrength.allCases.first(where: { $0.rawValue == value || $0.title.lowercased() == value }) else {
+                    throw UsageError(message: "--pressure must be standard or strong (or warn or critical).")
+                }
+                invocation.pressure = strength
+            default:
+                throw UsageError(message: "Unknown argument: \(argument)")
+            }
+        }
+
+        invocation.command = command ?? .help
+        if command == nil, arguments.contains(where: { $0 != "--help" && $0 != "-h" }) {
+            throw UsageError(message: "Add a command, for example --stats or --clean.")
+        }
+
+        if invocation.pressure != nil && invocation.skipPressure {
+            throw UsageError(message: "--pressure= and --no-pressure cannot be used together.")
+        }
+        let cleanOptionsUsed = invocation.skipFlush || invocation.skipPressure || invocation.skipPurge || invocation.pressure != nil
+        if cleanOptionsUsed && invocation.command != .clean {
+            throw UsageError(message: "--no-sync, --no-pressure, --no-purge, and --pressure= work only with --clean.")
+        }
+        if invocation.json && ![.stats, .clean, .status].contains(invocation.command) {
+            throw UsageError(message: "--json works only with --stats, --clean, and --status.")
+        }
+        if invocation.demo, case .screenshots = invocation.command {} else if invocation.demo {
+            throw UsageError(message: "--demo works only with --screenshots.")
+        }
+        return invocation
+    }
+
+    // MARK: Commands
+
+    private static func execute(_ invocation: Invocation) async -> Int32 {
+        Preference.registerDefaults()
+        let json = invocation.json
+
+        switch invocation.command {
+        case .help:
             print(usage)
             return 0
-        }
-        if arguments.contains("--stats") {
-            let snapshot = MemorySnapshot.current()
+
+        case .version:
+            print("\(AppInfo.name) \(AppInfo.version) (\(AppInfo.build))")
+            return 0
+
+        case .stats:
+            guard let snapshot = MemorySnapshot.current() else {
+                printError("macOS did not report memory statistics.")
+                return 1
+            }
             print(json ? encode(snapshot) : describe(snapshot))
             return 0
-        }
-        if arguments.contains("--status") {
+
+        case .status:
             let installed = await AdminAccess.isInstalled()
             print(json ? encode(["adminAccess": installed]) : "Admin access: \(installed ? "set up" : "not set up")")
             return installed ? 0 : 2
-        }
-        if arguments.contains("--show-rule") {
+
+        case .showRule:
             print(AdminAccess.sudoersRule)
             return 0
-        }
-        if arguments.contains("--setup") {
+
+        case .setup:
             do {
                 try await AdminAccess.install()
-                print("Admin access is set up. Deep clean no longer asks for a password.")
+                print("Admin access is set up. Cleaning no longer needs your password.")
                 return 0
             } catch {
                 printError(error.localizedDescription)
                 return 1
             }
-        }
-        if arguments.contains("--remove-setup") {
+
+        case .removeSetup:
             do {
                 try await AdminAccess.uninstall()
                 print("Admin access removed.")
@@ -65,36 +170,32 @@ enum CommandLineInterface {
                 printError(error.localizedDescription)
                 return 1
             }
+
+        case .clean:
+            return await clean(invocation)
+
+        case .screenshots(let directory):
+            return await Screenshots.render(to: URL(filePath: directory), demo: invocation.demo)
         }
-        if arguments.contains("--clean") {
-            return await clean(arguments, json: json)
-        }
-        if let index = arguments.firstIndex(of: "--screenshots") {
-            let directory = arguments.indices.contains(index + 1) ? arguments[index + 1] : "screenshots"
-            return await Screenshots.render(to: URL(filePath: directory))
-        }
-        return 64
     }
 
-    private static func clean(_ arguments: [String], json: Bool) async -> Int32 {
+    private static func clean(_ invocation: Invocation) async -> Int32 {
         var options = UserDefaults.standard.cleanOptions
-        if arguments.contains("--no-sync") { options.flushWrites = false }
-        if arguments.contains("--no-pressure") { options.pressureSignal = nil }
-        if arguments.contains("--no-purge") { options.purgeDiskCache = false }
-        if let value = arguments.first(where: { $0.hasPrefix("--pressure=") })?.split(separator: "=").last {
-            guard let strength = PressureStrength(rawValue: String(value)) else {
-                printError("--pressure must be warn or critical.")
-                return 64
-            }
-            options.pressureSignal = strength
-        }
+        if invocation.skipFlush { options.flushWrites = false }
+        if let pressure = invocation.pressure { options.pressureSignal = pressure }
+        if invocation.skipPressure { options.pressureSignal = nil }
+        if invocation.skipPurge { options.purgeDiskCache = false }
         guard !options.isEmpty else {
-            printError("Every cleaning step is turned off.")
+            printError("Every cleaning step is turned off. Turn one on in Settings › Cleaning.")
             return 64
         }
 
-        let report = await Cleaner.clean(options: options, trigger: .commandLine) { step in
+        let json = invocation.json
+        guard let report = await Cleaner.clean(options: options, trigger: .commandLine, progress: { step in
             if !json { print(step.progressTitle) }
+        }) else {
+            printError("Another clean is already running.")
+            return 1
         }
 
         if json {
@@ -105,18 +206,24 @@ enum CommandLineInterface {
             print("After   \(describe(report.after))")
             for result in report.steps {
                 switch result.outcome {
-                case .done: print("  ✓ \(result.step.rawValue)")
-                case .needsSetup: print("  – \(result.step.rawValue): skipped, run --setup once to allow it")
-                case .failed(let message): print("  ✗ \(result.step.rawValue): \(message)")
+                case .done: print("  ✓ \(result.step.title)")
+                case .needsSetup: print("  – \(result.step.title): skipped. Run --setup once to allow it.")
+                case .failed(let message): print("  ✗ \(result.step.title): \(message)")
                 }
             }
             let seconds = report.duration.formatted(.number.precision(.fractionLength(1)))
-            print("Freed \(ByteFormat.string(max(report.freed, 0))) in \(seconds) s")
+            var sources: [String] = []
+            if report.freed > 0, report.cachedFilesCleared > 0 { sources.append("cached files −\(ByteFormat.string(report.cachedFilesCleared))") }
+            if report.freed > 0, report.appMemoryReleased > 0 { sources.append("app memory −\(ByteFormat.string(report.appMemoryReleased))") }
+            let detail = sources.isEmpty ? "" : " (\(sources.joined(separator: ", ")))"
+            print("Freed \(ByteFormat.string(max(report.freed, 0))) in \(seconds) s\(detail)")
         }
 
         if !report.failures.isEmpty { return 1 }
         return report.needsSetup ? 2 : 0
     }
+
+    // MARK: Output
 
     private static func describe(_ snapshot: MemorySnapshot) -> String {
         [
@@ -142,26 +249,32 @@ enum CommandLineInterface {
     }
 
     private static let usage = """
-        Usage: MacMemoryCleaner [command] [options]
+        Usage: MacMemoryCleaner <command> [options]
 
         Without a command, the app starts in the menu bar.
 
         Commands:
-          --stats            Print current memory use.
-          --clean            Clean memory with the steps chosen in Settings.
-              --no-sync          Skip flushing pending writes.
-              --no-pressure      Skip the memory-pressure signal.
-              --pressure=LEVEL   Signal level: warn or critical.
-              --no-purge         Skip purging the disk cache.
-          --status           Tell whether admin access is set up (exit 2 if not).
-          --setup            Set up admin access. Shows the macOS password prompt.
-          --show-rule        Print the sudoers rule that --setup installs.
-          --remove-setup     Remove admin access.
-          --screenshots DIR  Save PNG renders of the panel and settings to DIR.
+          --stats              Print current memory use.
+          --clean              Clean memory with the steps chosen in Settings.
+              --no-sync            Skip "Flush pending writes".
+              --no-pressure        Skip "Ask apps to release memory".
+              --pressure=LEVEL     Signal strength: standard or strong.
+              --no-purge           Skip "Purge disk cache".
+          --status             Show whether admin access is set up. Exit status 2 if not.
+          --setup              Set up admin access. Shows the macOS password prompt.
+          --show-rule          Print the sudoers rule that --setup installs.
+          --remove-setup       Remove admin access. Shows the macOS password prompt.
+          --version            Print the app version.
+          --help               Print this help.
 
         Options:
-          --json             Print machine-readable output.
+          --json               Print JSON. Works with --stats, --clean, and --status.
 
-        Exit status: 0 success, 1 a step failed, 2 admin access is not set up.
+        Development:
+          --screenshots DIR    Save PNG renders of the panel and Settings in DIR.
+              --demo               Use sample data instead of this Mac's apps.
+
+        Exit status: 0 success, 1 a step failed or another clean was running,
+        2 admin access is not set up, 64 usage error.
         """
 }

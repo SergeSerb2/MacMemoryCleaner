@@ -9,16 +9,11 @@ let package = Package(
             name: "MacMemoryCleaner",
             path: "Sources/MacMemoryCleaner",
             swiftSettings: [
+                // Everything runs on the main actor unless marked `nonisolated` or `@concurrent`.
                 .defaultIsolation(MainActor.self),
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
                 .enableUpcomingFeature("InferIsolatedConformances"),
-            ],
-            linkerSettings: [
-                .linkedFramework("Carbon"),
-                .linkedFramework("ServiceManagement"),
-                .linkedFramework("UserNotifications"),
             ]
         ),
-    ],
-    swiftLanguageModes: [.v6]
+    ]
 )

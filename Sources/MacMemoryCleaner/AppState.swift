@@ -4,7 +4,7 @@ import Observation
 /// The single source of truth for the menu bar panel and the settings window.
 @Observable
 final class AppState {
-    private(set) var snapshot = MemorySnapshot.current()
+    private(set) var snapshot = MemorySnapshot.current() ?? .empty
     private(set) var topApps: [AppMemoryUsage] = []
     private(set) var isCleaning = false
     private(set) var currentStep: CleanStep?
@@ -20,18 +20,30 @@ final class AppState {
     /// The panel only samples per-app memory while someone is looking at it.
     var isPanelVisible = false {
         didSet {
-            guard isPanelVisible != oldValue else { return }
-            if isPanelVisible { Task { await refresh(includeApps: true) } }
+            guard isPanelVisible != oldValue, isPanelVisible else { return }
+            Task {
+                await refresh(includeApps: true)
+                // Setup may have happened elsewhere, for example with `--setup`.
+                if !adminBusy { await refreshAdminStatus() }
+            }
         }
     }
+
+    /// While the pointer is over the app list, rows keep their order, so a click never
+    /// lands on an app that just moved under the pointer.
+    var appOrderFrozen = false
 
     @ObservationIgnored private let defaults = UserDefaults.standard
     /// Created in `start()`: the notification center only works inside the app bundle.
     @ObservationIgnored private var notifier: Notifier?
     @ObservationIgnored private var hotKey: GlobalHotKey?
     @ObservationIgnored private var pressureSource: DispatchSourceMemoryPressure?
-    @ObservationIgnored private var lastCleanFinished: Date?
     @ObservationIgnored private var pollTask: Task<Void, Never>?
+    /// Set by `showDemoData()`. Stops live data from replacing the sample data.
+    @ObservationIgnored private var isDemo = false
+    /// A clean cannot raise available memory much (purged cache only becomes free memory),
+    /// so after a threshold clean, wait until available memory recovers before the next.
+    @ObservationIgnored private var thresholdArmed = true
 
     init() {
         Preference.registerDefaults()
@@ -45,7 +57,12 @@ final class AppState {
         applyHotKeyPreference()
         startPressureMonitor()
         startPolling()
-        Task { await refreshAdminStatus() }
+        Task {
+            await refreshAdminStatus()
+            // Ask for notification permission now, in context, rather than in the middle of
+            // the first automatic clean.
+            if defaults[Preference.notifyAfterClean] { _ = await notifier?.requestAuthorization() }
+        }
     }
 
     // MARK: Cleaning
@@ -53,21 +70,29 @@ final class AppState {
     func clean(trigger: CleanTrigger) {
         guard !isCleaning else { return }
         isCleaning = true
-        Log.app.info("Clean started: \(trigger.title, privacy: .public)")
+        Log.app.info("Clean requested. \(trigger.title, privacy: .public)")
         Task {
-            let report = await Cleaner.clean(options: defaults.cleanOptions, trigger: trigger) { step in
+            defer {
+                currentStep = nil
+                isCleaning = false
+            }
+            guard let report = await Cleaner.clean(options: defaults.cleanOptions, trigger: trigger, progress: { step in
                 self.currentStep = step
+            }) else {
+                Log.app.info("Clean skipped: another clean is running")
+                return
             }
             lastReport = report
-            lastCleanFinished = report.finished
             let steps = report.steps.map { "\($0.step.rawValue)=\($0.outcome)" }.joined(separator: " ")
             Log.app.info("Clean finished: freed \(report.freed) bytes in \(report.duration, format: .fixed(precision: 1)) s; \(steps, privacy: .public)")
-            currentStep = nil
-            isCleaning = false
-            if report.needsSetup { adminInstalled = false }
+            if report.needsSetup {
+                adminInstalled = false
+            } else if report.steps.contains(where: { $0.step.needsAdmin && $0.outcome == .done }) {
+                adminInstalled = true
+            }
             await refresh(includeApps: isPanelVisible)
             // The panel already shows the result, so only notify when it is closed.
-            if defaults.bool(forKey: Preference.notifyAfterClean) && !isPanelVisible {
+            if defaults[Preference.notifyAfterClean] && !isPanelVisible {
                 await notifier?.post(report)
             }
         }
@@ -76,10 +101,11 @@ final class AppState {
     // MARK: Apps
 
     func quit(_ usage: AppMemoryUsage, force: Bool = false) {
+        guard let app = usage.app else { return }
         if force {
-            usage.app.forceTerminate()
+            app.forceTerminate()
         } else {
-            usage.app.terminate()
+            app.terminate()
         }
         Task {
             try? await Task.sleep(for: .seconds(1.5))
@@ -107,7 +133,7 @@ final class AppState {
         adminError = nil
         do {
             try await change()
-        } catch AdminAccess.SetupError.cancelled {
+        } catch AdminAccess.SetupError.canceled {
             // The user closed the password prompt. Nothing to report.
         } catch {
             adminError = error.localizedDescription
@@ -130,16 +156,16 @@ final class AppState {
 
     func applyHotKeyPreference() {
         guard let hotKey else { return }
-        guard defaults.bool(forKey: Preference.hotKeyEnabled) else {
+        guard defaults[Preference.hotKeyEnabled] else {
             hotKey.unregister()
             hotKeyAvailable = true
             return
         }
         hotKeyAvailable = hotKey.register(
-            keyCode: defaults.integer(forKey: Preference.hotKeyCode),
-            carbonModifiers: defaults.integer(forKey: Preference.hotKeyModifiers)
+            keyCode: defaults[Preference.hotKeyCode],
+            carbonModifiers: defaults[Preference.hotKeyModifiers]
         )
-        Log.app.info("Hot key \(self.defaults.string(forKey: Preference.hotKeyLabel) ?? "", privacy: .public) registered: \(self.hotKeyAvailable)")
+        Log.app.info("Hot key \(self.defaults[Preference.hotKeyLabel], privacy: .public) registered: \(self.hotKeyAvailable)")
     }
 
     /// Lets the shortcut recorder capture the current shortcut instead of triggering it.
@@ -156,6 +182,7 @@ final class AppState {
                 guard let self else { return }
                 let visible = self.isPanelVisible
                 await self.refresh(includeApps: visible)
+                self.checkSustainedPressure()
                 self.checkAvailableMemoryThreshold()
                 try? await Task.sleep(for: .seconds(visible ? 2 : 5))
             }
@@ -163,39 +190,95 @@ final class AppState {
     }
 
     func refresh(includeApps: Bool) async {
-        let current = MemorySnapshot.current()
-        if current != snapshot { snapshot = current }
-        if includeApps { topApps = await AppMemorySampler.topApps(limit: 6) }
+        guard !isDemo else { return }
+        if let current = MemorySnapshot.current(), current != snapshot { snapshot = current }
+        guard includeApps else { return }
+        let fresh = await AppMemorySampler.topApps(limit: 6)
+        if appOrderFrozen {
+            // Update the numbers in place. Apps that quit drop out; new ones wait.
+            topApps = topApps.compactMap { row in
+                fresh.first { $0.id == row.id } ?? (row.app?.isTerminated == false ? row : nil)
+            }
+        } else {
+            topApps = fresh
+        }
     }
 
     private func startPressureMonitor() {
         let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
         source.setEventHandler { [weak self, unowned source] in
             Log.app.info("Memory pressure event: \(source.data.rawValue)")
-            guard let self, self.defaults.bool(forKey: Preference.autoCleanOnPressure) else { return }
+            guard let self, self.defaults[Preference.autoCleanOnPressure] else { return }
             self.autoClean(trigger: .memoryPressure)
         }
         source.activate()
         pressureSource = source
     }
 
+    /// Pressure events mark a change of level only. If pressure began during the cool-down
+    /// and never let go, this catches it once the cool-down ends.
+    private func checkSustainedPressure() {
+        guard defaults[Preference.autoCleanOnPressure], snapshot.pressure != .normal else { return }
+        autoClean(trigger: .memoryPressure, quietlySkip: true)
+    }
+
     private func checkAvailableMemoryThreshold() {
-        guard defaults.bool(forKey: Preference.autoCleanBelowThreshold) else { return }
-        let threshold = defaults.integer(forKey: Preference.autoCleanThreshold)
-        if snapshot.availablePercent < threshold {
-            autoClean(trigger: .lowAvailableMemory(percent: snapshot.availablePercent))
+        guard defaults[Preference.autoCleanBelowThreshold] else { return }
+        let threshold = defaults[Preference.autoCleanThreshold]
+        if snapshot.availablePercent >= threshold + 5 { thresholdArmed = true }
+        guard thresholdArmed, snapshot.availablePercent < threshold else { return }
+        if autoClean(trigger: .lowAvailableMemory(percent: snapshot.availablePercent), quietlySkip: true) {
+            thresholdArmed = false
         }
     }
 
-    private func autoClean(trigger: CleanTrigger) {
+    /// Starts a clean unless one ran recently. Every clean counts for the cool-down,
+    /// including cleans from the command line. Returns whether a clean started.
+    @discardableResult
+    private func autoClean(trigger: CleanTrigger, quietlySkip: Bool = false) -> Bool {
         // Our own pressure signal also reaches this app, which is one more reason for the
         // isCleaning guard and the cool-down.
-        guard !isCleaning else { return }
-        let minimumGap = TimeInterval(max(defaults.integer(forKey: Preference.autoCleanMinimumMinutes), 1) * 60)
-        if let lastCleanFinished, Date.now.timeIntervalSince(lastCleanFinished) < minimumGap {
-            Log.app.info("Auto-clean skipped: last clean was under \(Int(minimumGap / 60)) minutes ago")
-            return
+        guard !isCleaning else { return false }
+        let minimumGap = TimeInterval(max(defaults[Preference.autoCleanMinimumMinutes], 1) * 60)
+        if let last = Cleaner.lastCleanFinished, Date.now.timeIntervalSince(last) < minimumGap {
+            if !quietlySkip { Log.app.info("Auto-clean skipped: last clean was under \(Int(minimumGap / 60)) minutes ago") }
+            return false
         }
         clean(trigger: trigger)
+        return true
+    }
+
+    // MARK: Demo data
+
+    /// Fills the state with sample data for an 8 GB Mac, two minutes after a clean, so the
+    /// README screenshots show no one's real apps.
+    func showDemoData() {
+        isDemo = true
+        let mb: UInt64 = 1_048_576
+        let after = MemorySnapshot(
+            total: 8192 * mb, free: 1640 * mb, appMemory: 3690 * mb, wired: 1330 * mb,
+            compressed: 920 * mb, cachedFiles: 610 * mb, swapUsed: 1210 * mb, swapTotal: 2048 * mb,
+            availablePercent: 28, pressure: .normal
+        )
+        var before = after
+        before.free = 290 * mb
+        before.cachedFiles = 1960 * mb
+        snapshot = after
+        lastReport = CleanReport(
+            trigger: .manual, finished: .now.addingTimeInterval(-120), duration: 6.4,
+            before: before, after: after,
+            steps: CleanStep.allCases.map { StepResult(step: $0, outcome: .done) }
+        )
+        adminInstalled = true
+        topApps = [
+            ("Safari", "/Applications/Safari.app", 1830),
+            ("Mail", "/System/Applications/Mail.app", 612),
+            ("Photos", "/System/Applications/Photos.app", 548),
+            ("Music", "/System/Applications/Music.app", 391),
+            ("Messages", "/System/Applications/Messages.app", 287),
+            ("Notes", "/System/Applications/Notes.app", 204),
+        ].enumerated().map { index, app in
+            AppMemoryUsage(sampleID: pid_t(index + 1), name: app.0, appPath: app.1, bytes: app.2 * mb)
+        }
     }
 }

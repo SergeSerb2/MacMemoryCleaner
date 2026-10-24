@@ -17,30 +17,43 @@ nonisolated enum AdminAccess {
                 ["/usr/bin/memory_pressure", "-S", "-l", strength.rawValue, "-s", "2"]
             }
         }
+
+        /// The command as the sudoers rule spells it. In sudoers, a bare path allows any
+        /// arguments, and `""` allows none.
+        var sudoersCommand: String {
+            arguments.count == 1 ? arguments[0] + " \"\"" : arguments.joined(separator: " ")
+        }
     }
 
     enum SetupError: LocalizedError {
-        case cancelled
-        case failed(String)
+        case canceled
+        case installFailed(String)
+        case removeFailed(String)
 
         var errorDescription: String? {
             switch self {
-            case .cancelled: "Setup was cancelled."
-            case .failed(let output): "Setup failed: \(output)"
+            case .canceled: "You canceled the password prompt."
+            case .installFailed(let output): "Couldn’t set up admin access: \(output)"
+            case .removeFailed(let output): "Couldn’t remove admin access: \(output)"
             }
         }
     }
 
-    static let sudoersPath = "/private/etc/sudoers.d/macmemorycleaner"
+    /// One file per account, so two accounts on one Mac never overwrite each other's rule.
+    /// sudo skips file names that contain a dot, so the name has none.
+    static var sudoersPath: String { "/private/etc/sudoers.d/macmemorycleaner-\(getuid())" }
+
+    /// Where builds before 1.0 put the rule. Setup and removal delete it.
+    private static let legacySudoersPath = "/private/etc/sudoers.d/macmemorycleaner"
 
     /// The rule names the account by numeric user ID, so no account name can turn into a
     /// sudoers keyword such as ALL. It defines no aliases, so it cannot clash with other rules.
     static var sudoersRule: String {
-        let commands = PrivilegedCommand.allCases.map { $0.arguments.joined(separator: " ") }
+        let commands = PrivilegedCommand.allCases.map(\.sudoersCommand)
         return [
             "# Added by Mac Memory Cleaner. It lets user ID \(getuid()) run the memory cleaning",
             "# commands below as root without a password. Remove it in the app Settings,",
-            "# or run: sudo rm /etc/sudoers.d/macmemorycleaner",
+            "# or run: sudo rm \(sudoersPath.replacing("/private/etc", with: "/etc"))",
             "#\(getuid()) ALL = (root) NOPASSWD: " + commands.joined(separator: ", "),
         ].joined(separator: "\n")
     }
@@ -56,13 +69,17 @@ nonisolated enum AdminAccess {
     }
 
     static func run(_ command: PrivilegedCommand) async -> ShellResult {
-        await Shell.run("/usr/bin/sudo", ["-n"] + command.arguments)
+        // Killing memory_pressure mid-run would leave macOS at the simulated level until the
+        // next run, so a slow pressure signal is left to finish on its own.
+        let killOnTimeout = if case .purge = command { true } else { false }
+        return await Shell.run("/usr/bin/sudo", ["-n"] + command.arguments, killOnTimeout: killOnTimeout)
     }
 
     /// Shows the macOS administrator prompt once and installs the sudoers rule.
     static func install() async throws {
         // printf with single-quoted arguments keeps the rule free of shell expansion.
-        // The rule must not contain single quotes.
+        // The rule must not contain single quotes. (It contains double quotes, which the
+        // AppleScript string escapes.)
         let lines = sudoersRule.split(separator: "\n").map { "'\($0)'" }.joined(separator: " ")
 
         // Write to a dot-file first (sudo ignores names with a dot), check it with visudo,
@@ -76,28 +93,31 @@ nonisolated enum AdminAccess {
             "/bin/chmod 0440 \"$tmp\"",
             "/usr/sbin/visudo -cqf \"$tmp\"",
             "/bin/mv -f \"$tmp\" \(sudoersPath)",
+            "/bin/rm -f \(legacySudoersPath)",
         ].joined(separator: "; ")
 
         try await runAsAdministrator(
             script,
-            prompt: "Mac Memory Cleaner needs your password once. After this, it can clean memory without asking."
+            prompt: "Mac Memory Cleaner wants to let your account run purge and memory_pressure as root without a password. You only need to do this once.",
+            failure: SetupError.installFailed
         )
     }
 
     static func uninstall() async throws {
         try await runAsAdministrator(
-            "/bin/rm -f \(sudoersPath)",
-            prompt: "Mac Memory Cleaner needs your password to remove its admin access."
+            "/bin/rm -f \(sudoersPath) \(legacySudoersPath)",
+            prompt: "Mac Memory Cleaner wants to remove the rule that lets it clean memory without your password.",
+            failure: SetupError.removeFailed
         )
     }
 
-    private static func runAsAdministrator(_ shellScript: String, prompt: String) async throws {
+    private static func runAsAdministrator(_ shellScript: String, prompt: String, failure: (String) -> SetupError) async throws {
         let appleScript = "do shell script \(appleScriptString(shellScript)) with prompt \(appleScriptString(prompt)) with administrator privileges"
         // The password prompt waits for the user, so give it far longer than a normal command.
         let result = await Shell.run("/usr/bin/osascript", ["-e", appleScript], timeout: .seconds(600))
         guard result.succeeded else {
-            if result.output.contains("-128") { throw SetupError.cancelled }
-            throw SetupError.failed(result.output)
+            if result.output.contains("-128") { throw SetupError.canceled }
+            throw failure(result.output)
         }
     }
 

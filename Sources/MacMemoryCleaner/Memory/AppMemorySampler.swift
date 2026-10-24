@@ -3,11 +3,28 @@ import Darwin
 
 /// A running app and the memory it holds, including its helper processes.
 struct AppMemoryUsage: Identifiable {
-    let app: NSRunningApplication
+    let id: pid_t
+    let name: String
+    let icon: NSImage
     let bytes: UInt64
+    /// The app to quit. `nil` only for the sample rows of `--screenshots --demo`.
+    let app: NSRunningApplication?
 
-    var id: pid_t { app.processIdentifier }
-    var name: String { app.localizedName ?? app.bundleIdentifier ?? "PID \(id)" }
+    init(app: NSRunningApplication, bytes: UInt64) {
+        id = app.processIdentifier
+        name = app.localizedName ?? app.bundleIdentifier ?? "PID \(app.processIdentifier)"
+        icon = app.icon ?? NSWorkspace.shared.icon(for: .application)
+        self.bytes = bytes
+        self.app = app
+    }
+
+    init(sampleID id: pid_t, name: String, appPath: String, bytes: UInt64) {
+        self.id = id
+        self.name = name
+        icon = NSWorkspace.shared.icon(forFile: appPath)
+        self.bytes = bytes
+        app = nil
+    }
 }
 
 enum AppMemorySampler {

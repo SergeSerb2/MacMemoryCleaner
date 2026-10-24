@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and smoke test
+    # macOS 27 with Xcode 27. The app targets macOS 27 only.
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode 27.1
+        run: sudo xcode-select -s /Applications/Xcode_27.1.app
+
+      - name: Build app, zip, and disk image
+        env:
+          SIGN_IDENTITY: "-"
+        run: scripts/build.sh
+
+      - name: Check signature and disk image
+        run: |
+          codesign --verify --strict --verbose=2 "build/Mac Memory Cleaner.app"
+          hdiutil verify build/MacMemoryCleaner.dmg
+
+      - name: Smoke test the command line
+        # The runner user has passwordless sudo, so this runs the real clean, root steps included.
+        run: |
+          MMC="build/Mac Memory Cleaner.app/Contents/MacOS/MacMemoryCleaner"
+          "$MMC" --help
+          "$MMC" --stats
+          "$MMC" --show-rule | /usr/sbin/visudo -cf -
+          "$MMC" --clean --json > clean.json
+          jq -e '[.steps[].outcome | has("done")] | all and length == 3' clean.json
+          jq '{freed: (.after.free - .before.free), duration}' clean.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: MacMemoryCleaner-${{ github.sha }}
+          path: |
+            build/MacMemoryCleaner.dmg
+            build/MacMemoryCleaner.zip
+          if-no-files-found: error

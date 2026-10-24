@@ -13,7 +13,7 @@ enum Main {
 
 struct MacMemoryCleanerApp: App {
     @State private var state: AppState
-    @AppStorage(Preference.showUsageInMenuBar) private var showUsage = true
+    @AppStorage(Preference.showUsageInMenuBar) private var showUsage: Bool
 
     init() {
         let state = AppState()
@@ -44,11 +44,15 @@ private struct MenuBarLabel: View {
     var body: some View {
         // The outline chip next to a percentage reads as a battery, the filled one does not.
         let symbol = state.isCleaning ? "sparkles" : "memorychip.fill"
-        if showUsage {
-            Label("\(Int((state.snapshot.usedFraction * 100).rounded()))%", systemImage: symbol)
-                .labelStyle(.titleAndIcon)
-        } else {
-            Image(systemName: symbol)
+        let percent = Int((state.snapshot.usedFraction * 100).rounded())
+        Group {
+            if showUsage {
+                Label("\(percent)%", systemImage: symbol)
+                    .labelStyle(.titleAndIcon)
+            } else {
+                Image(systemName: symbol)
+            }
         }
+        .accessibilityLabel("Mac Memory Cleaner, memory used \(percent)%")
     }
 }
