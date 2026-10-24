@@ -21,7 +21,8 @@ struct AppMemoryUsage: Identifiable {
     init(sampleID id: pid_t, name: String, appPath: String, bytes: UInt64) {
         self.id = id
         self.name = name
-        icon = NSWorkspace.shared.icon(forFile: appPath)
+        // Resolve links: /Applications/Safari.app is one, and its icon would get an arrow badge.
+        icon = NSWorkspace.shared.icon(forFile: URL(filePath: appPath).resolvingSymlinksInPath().path)
         self.bytes = bytes
         app = nil
     }

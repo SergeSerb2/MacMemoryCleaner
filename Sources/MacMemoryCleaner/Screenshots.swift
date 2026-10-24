@@ -73,7 +73,9 @@ enum Screenshots {
 
         try? await Task.sleep(for: .milliseconds(300))
         window.setContentSize(hosting.fittingSize)
-        let visible = NSScreen.main?.visibleFrame ?? .zero
+        // The sharpest connected display gives the sharpest images.
+        let screen = NSScreen.screens.max { $0.backingScaleFactor < $1.backingScaleFactor } ?? NSScreen.main
+        let visible = screen?.visibleFrame ?? .zero
         window.setFrameOrigin(NSPoint(x: visible.minX + 40, y: visible.minY + 40))
         window.makeKeyAndOrderFront(nil)
         try? await Task.sleep(for: .seconds(1))

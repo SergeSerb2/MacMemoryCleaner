@@ -63,7 +63,8 @@ MMC="build/Mac Memory Cleaner.app/Contents/MacOS/MacMemoryCleaner"
 
 Give your terminal Screen Recording permission first. Without it, `--screenshots` still
 works, but Liquid Glass looks flat. Each window comes to the front and takes keystrokes for
-about a second, so do not type while it runs. Render on a Retina display for sharp images.
+about a second, so do not type while it runs. The capture uses the sharpest connected
+display, so render on a Mac with a Retina display for sharp images.
 
 CI builds the app on macOS 27 for every pull request and runs a real clean on the runner.
 
